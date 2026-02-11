@@ -5,6 +5,7 @@ from collections.abc import Callable
 from abc import abstractmethod
 import jax.numpy as jnp
 import numpy as np
+import gemmi
 
 from ..common import LossTerm
 
@@ -108,8 +109,7 @@ def interaction_prediction_score(
 def predicted_tm_score(
     logits: jnp.ndarray,
     bin_centers: jnp.ndarray,
-    asym_id: jnp.ndarray | None = None,
-    interface: bool = False,
+    pair_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     num_res = logits.shape[0]
     # Clip num_res to avoid negative/undefined d0.
@@ -128,9 +128,8 @@ def predicted_tm_score(
     # E_distances tm(distance).
     predicted_tm_term = jnp.sum(probs * tm_per_bin, axis=-1)
 
-    pair_mask = jnp.ones(shape=(num_res, num_res), dtype=bool)
-    if interface:
-        pair_mask *= asym_id[:, None] != asym_id[None, :]
+    if pair_mask is None:
+        pair_mask = jnp.ones(shape=(num_res, num_res), dtype=bool)
 
     predicted_tm_term *= pair_mask
 
@@ -430,19 +429,53 @@ class IPTMLoss(LossTerm):
         asym_id = jnp.concatenate(
             (jnp.zeros(sequence.shape[0]), jnp.ones(N - sequence.shape[0]))
         ).astype(jnp.int32)
-        logits = output.pae_logits
-        if len(logits.shape) == 3:
-            logits = logits[None]
-        scores = jax.vmap(
-            lambda logits: predicted_tm_score(
-                asym_id=asym_id,
-                logits=logits,
-                bin_centers=output.pae_bins,
-                interface=True,
-            ).max()
-        )(logits)
-        iptm = scores.mean()
+        pair_mask = asym_id[:, None] != asym_id[None, :]
+        iptm = predicted_tm_score(
+            logits=output.pae_logits,
+            bin_centers=output.pae_bins,
+            pair_mask=pair_mask,
+        ).max()
         return -iptm, {"iptm": iptm}
+
+
+class BinderTargetIPTM(LossTerm):
+    def __call__(
+        self,
+        sequence: Float[Array, "N 20"],
+        output: AbstractStructureOutput,
+        key,
+    ):
+        # binder - target iptm -- we override asym-id in the case of multi-chain targets
+        N = output.full_sequence.shape[0]
+        asym_id = jnp.concatenate(
+            (jnp.zeros(sequence.shape[0]), jnp.ones(N - sequence.shape[0]))
+        ).astype(jnp.int32)
+        pair_mask = asym_id[:, None] != asym_id[None, :]
+        bt_iptm = predicted_tm_score(
+            logits=output.pae_logits,
+            bin_centers=output.pae_bins,
+            pair_mask=pair_mask,
+        )[: sequence.shape[0]].max()  # limit to binder index
+        return -bt_iptm, {"bt_iptm": bt_iptm}
+
+
+class BinderPTMLoss(LossTerm):
+    def __call__(
+        self,
+        sequence: Float[Array, "N 20"],
+        output: AbstractStructureOutput,
+        key,
+    ):
+        binder_len = sequence.shape[0]
+        num_res = output.full_sequence.shape[0]
+        pair_mask = jnp.zeros(shape=(num_res, num_res), dtype=bool)
+        pair_mask = pair_mask.at[:binder_len, :binder_len].set(True)
+        ptm = predicted_tm_score(
+            logits=output.pae_logits,
+            bin_centers=output.pae_bins,
+            pair_mask=pair_mask,
+        ).max()
+        return -ptm, {"binder_ptm": ptm}
 
 
 class BinderTargetIPSAE(LossTerm):
@@ -460,20 +493,14 @@ class BinderTargetIPSAE(LossTerm):
         asym_id = jnp.concatenate(
             (jnp.zeros(binder_len), jnp.ones(N - binder_len))
         ).astype(jnp.int32)
-        logits = output.pae_logits
-        if len(logits.shape) == 3:
-            logits = logits[None]
-        scores = jax.vmap(
-            lambda logits: self.reduce(
-                interaction_prediction_score(
-                    asym_id=asym_id,
-                    logits=logits,
-                    bin_centers=output.pae_bins,
-                    pae_cutoff=10.0,
-                )[:binder_len]
-            )
-        )(logits)
-        bt_ipsae = scores.mean()
+        bt_ipsae = self.reduce(
+            interaction_prediction_score(
+                asym_id=asym_id,
+                logits=output.pae_logits,
+                bin_centers=output.pae_bins,
+                pae_cutoff=10.0,
+            )[:binder_len]
+        )
         return -bt_ipsae, {"bt_ipsae": bt_ipsae}
 
 
@@ -492,20 +519,14 @@ class TargetBinderIPSAE(LossTerm):
         asym_id = jnp.concatenate(
             (jnp.zeros(binder_len), jnp.ones(N - binder_len))
         ).astype(jnp.int32)
-        logits = output.pae_logits
-        if len(logits.shape) == 3:
-            logits = logits[None]
-        scores = jax.vmap(
-            lambda logits: self.reduce(
-                interaction_prediction_score(
-                    asym_id=asym_id,
-                    logits=logits,
-                    bin_centers=output.pae_bins,
-                    pae_cutoff=10.0,
-                )[binder_len:]
-            )
-        )(logits)
-        tb_ipsae = scores.mean()
+        tb_ipsae = self.reduce(
+            interaction_prediction_score(
+                asym_id=asym_id,
+                logits=output.pae_logits,
+                bin_centers=output.pae_bins,
+                pae_cutoff=10.0,
+            )[binder_len:]
+        )
         return -tb_ipsae, {"tb_ipsae": tb_ipsae}
 
 

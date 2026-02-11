@@ -32,7 +32,11 @@ from boltzgen.model.models.boltz import Boltz
 from boltzgen.model.modules.masker import BoltzMasker
 from boltzgen.task.predict.data_from_yaml import DataConfig, FromYamlDataModule
 from boltzgen.task.predict.writer import DesignWriter
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PyTree
+
+from mosaic.losses.structure_prediction import AbstractStructureOutput
+from ..util import pairwise_distance
+
 
 
 def load_boltzgen(checkpoint_dir=Path("~/.boltz/").expanduser(), model_diverse=True):
@@ -411,21 +415,13 @@ class Sampler(eqx.Module):
             sample_schedule=sample_schedule,
         )
 
-
-def _cdist_no_batch(
-    a: Float[Array, "T N D"], b: Float[Array, "T M D"]
-) -> Float[Array, "T N M"]:
-    r = a[:, :, None, :] - b[:, None, :, :]
-    return jnp.sqrt(jnp.sum(r * r, axis=-1) + 1e-8)
-
-
 def _coords_to_restype(coords, *, des_idx, threshold: float = 0.5):
     design_coords = coords[des_idx]
     design_coords = design_coords.reshape(len(design_coords) // 14, 14, 3)
 
     # For each sidechain atom, compute closest backbone atom and count them
     # while excluding those side chain atoms whose distance is above a threshold
-    distances = _cdist_no_batch(
+    distances = pairwise_distance(
         design_coords[:, :4], design_coords[:, 4:]
     )  # torch.cdist(design_coords[:, :4], design_coords[:, 4:])
     value, argmin = jnp.min(distances, axis=1), jnp.argmin(distances, axis=1)
@@ -468,3 +464,40 @@ class CoordsToToken(eqx.Module):
     @eqx.filter_jit
     def __call__(self, coords: Float[Array, "... 3"]):
         return _coords_to_restype(coords, des_idx=self.des_idx)
+
+@dataclass
+class BoltzGenOutput(AbstractStructureOutput):
+    sample: jax.Array
+    features: PyTree
+    coords2token: CoordsToToken
+
+    @property
+    def full_sequence(self):
+        binder_sequence = self.coords2token(self.sample[0])
+        binder_sequence = jax.nn.one_hot(binder_sequence, 20, dtype=jnp.int32)
+        binder_len = binder_sequence.shape[0]
+        return self.features["res_type"][0, :, 2:22].at[:binder_len].set(binder_sequence)
+
+    @property
+    def asym_id(self):
+        return self.features["asym_id"][0]
+
+    @property
+    def residue_idx(self):
+        return self.features["residue_index"][0]
+
+    @property
+    def backbone_coordinates(self):
+        # could precompute the index in load_features to avoid slow operation alarm
+        bb_atom_inds = jnp.argmax(self.features["token_to_bb4_atoms"][0], axis=-1)
+        return self.sample[0][bb_atom_inds]
+
+    @property
+    def structure_coordinates(self):
+        return self.sample
+
+    @property
+    def ptm(self):
+        raise NotImplementedError
+
+

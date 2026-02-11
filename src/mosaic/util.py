@@ -1,16 +1,93 @@
+import io
+import warnings
 import hashlib
 from dataclasses import dataclass
+from functools import partial
 
 import equinox as eqx
 import jax
 import jax.tree_util as jtu
+import jax.numpy as jnp
+from jaxtyping import Float, Array
 
 import gemmi
+
+from collections import defaultdict
+
+ref_charge = defaultdict(int)
+ref_charge[('ARG', 'NH2')] = 1
+ref_charge[('LYZ', 'NZ')] = 1
+ref_charge[('GLU', 'OE2')] = -1
+ref_charge[('ASP', 'OD2')] = -1
+
+def pairwise_distance(
+    a: Float[Array, "... N D"], b: Float[Array, "... M D"]
+) -> Float[Array, "... N M"]:
+    r = a[..., :, None, :] - b[..., None, :, :]
+    return jnp.sqrt(jnp.sum(r * r, axis=-1) + 1e-8)
+
+def zero_nan_pullback(og_fn: callable):
+    fn = jax.custom_vjp(og_fn)
+
+    def _forward(*args, **kwargs):
+        return jax.vjp(og_fn, *args, **kwargs)
+
+    def _backward(pullback, g):
+        return jax.tree.map(jnp.nan_to_num, pullback(g))
+
+    fn.defvjp(_forward, _backward)
+    return fn
+
+_safe_SVD = zero_nan_pullback(partial(jnp.linalg.svd, full_matrices=False))
+
+def project_to_SO3(M: Float[Array, "3 3"]) -> Float[Array, "3 3"]:
+    U, _, Vt = _safe_SVD(M)
+    d = jnp.sign(jnp.linalg.det(Vt @ U.T))
+    R = U @ jnp.diag(jnp.array([1, 1, d])) @ Vt
+    return R
+
+def kabsch(
+    P: Float[Array, "N 3"], Q: Float[Array, "M 3"]
+):
+    """
+    Solve the optimization problem
+
+        min_{T in SE(3)} || vmap(T)(P) - Q ||^2
+
+    """
+
+    assert P.shape == Q.shape, "Point sets must have same shape"
+    assert P.shape[-1] == 3, "Points must be 3D"
+
+    centroid_P = jnp.mean(P, axis=0)
+    centroid_Q = jnp.mean(Q, axis=0)
+
+    P_centered = P - centroid_P
+    Q_centered = Q - centroid_Q
+
+    R = project_to_SO3(P_centered.T @ Q_centered)
+    t = centroid_Q - centroid_P @ R
+
+    return R, t
+
+def unaligned_rmsd(
+    P: Float[Array, "N 3"], Q: Float[Array, "M 3"]
+):
+    return jnp.sqrt(jnp.sum((P-Q)**2) / P.shape[0])
+
+def calculate_rmsd(
+    P: Float[Array, "N 3"], Q: Float[Array, "M 3"]
+):
+    """
+    Aligned RMSD between two 3D point clouds.
+    """
+    R, t = kabsch(P, Q)
+    return unaligned_rmsd(P@R + t, Q)
 
 def fold_in(key: jax.dtypes.prng_key, name: str) -> jax.dtypes.prng_key:
     # hash name to int
     h = hashlib.sha256(name.encode("utf-8")).digest()
-    h = int.from_bytes(h[-8:], "big")
+    h = int.from_bytes(h[-4:], "big")
     return jax.random.fold_in(key, h)
 
 
