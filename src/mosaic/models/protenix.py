@@ -38,7 +38,11 @@ from mosaic.structure_prediction import (
 )
 
 
-def load_model(name="protenix_mini_default_v0.5.0", cache_path=Path("~/.protenix")):
+import os 
+
+DEFAULT_PROTENIX_CACHE = os.environ.get("PROTENIX_CACHE_DIR", "~/.protenix")
+
+def load_model(name="protenix_mini_default_v0.5.0", cache_path=Path(DEFAULT_PROTENIX_CACHE)):
     cache_path = cache_path.expanduser()
     configs = {**configs_base, **{"data": data_configs}, **inference_configs}
     configs = parse_configs(

@@ -30,8 +30,12 @@ from ..common import LinearCombination, LossTerm
 from .structure_prediction import AbstractStructureOutput
 
 
+import os
+
+DEFAULT_BOLTZ_CACHE = os.environ.get("BOLTZ_CACHE_DIR", "~/.boltz")
+
 def load_boltz(
-    checkpoint_path: Path = Path("~/.boltz/boltz1_conf.ckpt").expanduser(),
+    checkpoint_path: Path = Path(DEFAULT_BOLTZ_CACHE) / "boltz1_conf.ckpt",
 ):
     predict_args = {
         "recycling_steps": 0,
@@ -308,7 +312,7 @@ sequences:
 
 def load_features_and_structure_writer(
     input_yaml_str: str,
-    cache=Path("~/.boltz/").expanduser(),
+    cache=Path(DEFAULT_BOLTZ_CACHE),
 ) -> tuple[PyTree, StructureWriter]:
     print("Loading data")
     out_dir_handle = (

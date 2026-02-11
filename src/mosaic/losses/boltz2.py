@@ -23,7 +23,11 @@ from ..util import pairwise_distance
 from .structure_prediction import AbstractStructureOutput, predicted_tm_score
 
 
-def load_boltz2(checkpoint_path=Path("~/.boltz/boltz2_conf.ckpt").expanduser()):
+import os
+
+DEFAULT_BOLTZ_CACHE = os.environ.get("BOLTZ_CACHE_DIR", "~/.boltz")
+
+def load_boltz2(checkpoint_path=Path(DEFAULT_BOLTZ_CACHE) / "boltz2_conf.ckpt"):
     if not checkpoint_path.exists():
         print(f"Downloading Boltz checkpoint to {checkpoint_path}")
         cache = checkpoint_path.parent
@@ -109,7 +113,7 @@ class StructureWriter:
 
 def load_features_and_structure_writer(
     input_yaml_str: str,
-    cache=Path("~/.boltz/").expanduser(),
+    cache=Path(DEFAULT_BOLTZ_CACHE),
 ) -> PyTree:
     print("Loading data")
     out_dir_handle = (

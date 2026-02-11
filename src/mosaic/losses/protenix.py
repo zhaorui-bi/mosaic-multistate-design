@@ -22,7 +22,11 @@ from protenix.protenij import Protenix as Protenij
 from mosaic.common import TOKENS, LinearCombination, LossTerm
 from mosaic.losses.structure_prediction import AbstractStructureOutput
 
-os.environ["PROTENIX_DATA_ROOT_DIR"] = str(Path("~/.protenix").expanduser())
+
+if "PROTENIX_DATA_ROOT_DIR" not in os.environ:
+    # default to PROTENIX_CACHE_DIR or ~/.protenix
+    default_dir = os.environ.get("PROTENIX_CACHE_DIR", "~/.protenix")
+    os.environ["PROTENIX_DATA_ROOT_DIR"] = str(Path(default_dir).expanduser())
 
 
 def biotite_atom_to_gemmi_atom(atom):

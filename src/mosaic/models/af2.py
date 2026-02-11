@@ -63,7 +63,11 @@ class AFOutput(eqx.Module):
     recycling_state: state.AlphaFoldState
 
 
-def load_af2(data_dir: str = "~/.alphafold", multimer=True):
+import os
+
+DEFAULT_AF2_CACHE_DIR = os.environ.get("AF2_CACHE_DIR", "~/.alphafold")
+
+def load_af2(data_dir: str = DEFAULT_AF2_CACHE_DIR, multimer=True):
     data_dir = Path(data_dir).expanduser()
 
     if not (data_dir / "params").exists():
@@ -403,7 +407,7 @@ class AlphaFold2(StructurePredictionModel):
     stacked_parameters: PyTree
     multimer: bool
 
-    def __init__(self, data_dir: str = "~/.alphafold", multimer=True):
+    def __init__(self, data_dir: str = DEFAULT_AF2_CACHE_DIR, multimer=True):
         (forward_function, stacked_params) = load_af2(data_dir=data_dir, multimer=multimer)
         self.af2_forward = forward_function
         self.stacked_parameters = stacked_params
@@ -425,6 +429,7 @@ class AlphaFold2(StructurePredictionModel):
     def build_loss(
         self, *, loss, features, recycling_steps=1, sampling_steps=None, name="af2", use_dropout=False, initial_state=None
     ):
+
         assert sampling_steps is None, "AF2 does not support sampling steps"
         return AlphaFoldLoss(
             model=self,
